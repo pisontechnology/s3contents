@@ -35,7 +35,7 @@ class GCSFS(GenericFS):
         super(GCSFS, self).__init__(**kwargs)
         self.log = log
 
-        token = os.path.expanduser(self.token)
+        token = None if self.token is None else os.path.expanduser(self.token)
         self.fs = gcsfs.GCSFileSystem(project=self.project, token=token)
 
         self.init()
