@@ -2,5 +2,5 @@ notebook
 requests
 boto3
 s3fs>=0.3.4
-gcsfs>=0.2.1
+gcsfs==0.6.2
 nose

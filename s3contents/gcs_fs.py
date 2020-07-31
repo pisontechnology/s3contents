@@ -1,6 +1,8 @@
+import base64
 import os
 
 import gcsfs
+from tornado.web import HTTPError
 
 from s3contents.genericfs import GenericFS, NoSuchFile
 from s3contents.ipycompat import Unicode
@@ -36,7 +38,7 @@ class GCSFS(GenericFS):
         self.log = log
 
         token = None if self.token is None else os.path.expanduser(self.token)
-        self.fs = gcsfs.GCSFileSystem(project=self.project, token=token)
+        self.fs = gcsfs.GCSFileSystem(project=self.project, token=token, cache_timeout=5)
 
         self.init()
 
@@ -55,27 +57,21 @@ class GCSFS(GenericFS):
 
     def isfile(self, path):
         path_ = self.path(path)
-        is_file = False
-
-        exists = self.fs.exists(path_)
-        if not exists:
+        try:
+            info = self.fs.info(path_)
+            is_file = info.get('type') == 'file'
+        except FileNotFoundError:
             is_file = False
-        else:
-            try:
-                # Info will fail if path is a dir
-                self.fs.info(path_)
-                is_file = True
-            except FileNotFoundError:
-                pass
-
         self.log.debug("S3contents.GCSFS: `%s` is a file: %s", path_, is_file)
         return is_file
 
     def isdir(self, path):
-        # GCSFS doesnt return exists=True for a directory with no files so
-        # we need to check if the dir_keep_file exists
-        is_dir = self.isfile(path + self.separator + self.dir_keep_file)
         path_ = self.path(path)
+        try:
+            info = self.fs.info(path_)
+            is_dir = info.get('type') == 'directory'
+        except FileNotFoundError:
+            is_dir = False
         self.log.debug("S3contents.GCSFS: `%s` is a directory: %s", path_, is_dir)
         return is_dir
 
@@ -105,9 +101,9 @@ class GCSFS(GenericFS):
             self.fs.rm(path_)
         elif self.isdir(path):
             self.log.debug("S3contents.GCSFS: Removing directory: `%s`", path_)
-            files = self.fs.walk(path_)
-            for f in files:
-                self.fs.rm(f)
+            for curdir, _, files in self.fs.walk(path_):
+                for f in files:
+                    self.fs.rm(self.path(curdir, f))
 
     def mkdir(self, path):
         path_ = self.path(path, self.dir_keep_file)
@@ -126,14 +122,26 @@ class GCSFS(GenericFS):
         path_ = self.path(path)
         info = self.fs.info(path_)
         ret = {}
-        ret["ST_MTIME"] = info["updated"]
+        ret["ST_MTIME"] = info.get("updated", None)
         return ret
 
     def write(self, path, content, format):
         path_ = self.path(self.unprefix(path))
         self.log.debug("S3contents.GCSFS: Writing file: `%s`", path_)
+        if format not in {"text", "base64"}:
+            raise HTTPError(
+                400, "Must specify format of file contents as 'text' or 'base64'",
+            )
+        try:
+            if format == "text":
+                content_ = content.encode("utf8")
+            else:
+                b64_bytes = content.encode("ascii")
+                content_ = base64.b64decode(b64_bytes)
+        except Exception as e:
+            raise HTTPError(400, "Encoding error saving %s: %s" % (path_, e))
         with self.fs.open(path_, mode="wb") as f:
-            f.write(content.encode("utf-8"))
+            f.write(content_)
 
     #  Utilities -------------------------------------------------------------------------------------------------------
 
